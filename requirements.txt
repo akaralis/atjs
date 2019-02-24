@@ -1,0 +1,4 @@
+numpy
+bootstrapped
+pandas
+scipy
