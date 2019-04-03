@@ -18,20 +18,36 @@ simulations_with_fixed_nodes = [
     (EBSchedulingMethod.ECV, Scenario.ONE_HOP), (EBSchedulingMethod.ECV, Scenario.TWO_HOPS),
     (EBSchedulingMethod.ECH, Scenario.ONE_HOP),
     (EBSchedulingMethod.ECH, Scenario.TWO_HOPS),
-    (EBSchedulingMethod.Minimal6TiSCH, Scenario.ANY)
+    (EBSchedulingMethod.Minimal6TiSCH, Scenario.ANY),
+    (EBSchedulingMethod.Minimal6TiSCH, Scenario.ANY),
+    (EBSchedulingMethod.MAC_BASED_AS, Scenario.ANY),
+    (EBSchedulingMethod.EMAC_BASED_AS, Scenario.ONE_HOP),
+    (EBSchedulingMethod.EMAC_BASED_AS, Scenario.TWO_HOPS)
 ]
 
 simulations_with_mobile_node = [
+    (EBSchedulingMethod.ECV,), (EBSchedulingMethod.ECH,),
+    (EBSchedulingMethod.Minimal6TiSCH,), (EBSchedulingMethod.ECFASV, False), (EBSchedulingMethod.ECFASV, True),
     (EBSchedulingMethod.CFASV, False), (EBSchedulingMethod.CFASV, True),
     (EBSchedulingMethod.CFASH, False), (EBSchedulingMethod.CFASH, True),
-    (EBSchedulingMethod.ECFASV, False), (EBSchedulingMethod.ECFASV, True),
     (EBSchedulingMethod.ECFASH, False), (EBSchedulingMethod.ECFASH, True),
+    (EBSchedulingMethod.MAC_BASED_AS,),
+    (EBSchedulingMethod.EMAC_BASED_AS,)
+]
+
+simulations_for_energy = [
     (EBSchedulingMethod.ECV,), (EBSchedulingMethod.ECH,),
-    (EBSchedulingMethod.Minimal6TiSCH,)
+    (EBSchedulingMethod.Minimal6TiSCH,), (EBSchedulingMethod.ECFASV, False), (EBSchedulingMethod.ECFASV, True),
+    (EBSchedulingMethod.CFASV, False), (EBSchedulingMethod.CFASV, True),
+    (EBSchedulingMethod.CFASH, False), (EBSchedulingMethod.CFASH, True),
+    (EBSchedulingMethod.ECFASH, False), (EBSchedulingMethod.ECFASH, True),
+    (EBSchedulingMethod.MAC_BASED_AS,),
+    (EBSchedulingMethod.EMAC_BASED_AS,)
 ]
 
 os.makedirs(os.path.join("filtered_statistics", "fixed_joining_node"), exist_ok=True)
 os.makedirs(os.path.join("filtered_statistics", "mobile_joining_node"), exist_ok=True)
+os.makedirs(os.path.join("filtered_statistics", "energy_consumption"), exist_ok=True)
 
 for sim in simulations_with_fixed_nodes:
     scheduling_method = sim[0]
@@ -102,7 +118,7 @@ for sim in simulations_with_mobile_node:
         csv_writer.writerow(["Advertisers", "Joining Time (s)", "", ""])
         csv_writer.writerow([""] + ["AVG", "CI_LL", "CI_UL"])
 
-        for num_advertisers in range(10, 71, 10):  # excluding PAN coordinator
+        for num_advertisers in range(10, 151, 10):  # excluding PAN coordinator
             record = [num_advertisers]
 
             mobile_node_joining_time_samples = []
@@ -112,5 +128,30 @@ for sim in simulations_with_mobile_node:
 
             res = bs.bootstrap(numpy.asarray(mobile_node_joining_time_samples), stat_func=bs_stats.mean,
                                num_iterations=1000)
+            record += [res.value, res.lower_bound, res.upper_bound]
+            csv_writer.writerow(record)
+
+for sim in simulations_for_energy:
+    scheduling_method = sim[0]
+    atp_enabled = sim[1] if len(sim) == 2 else False
+    db_name = "{}{}".format(scheduling_method.name, ("_with_ATP" if atp_enabled else ""))
+    db_conn = sqlite3.connect(os.path.join("statistics", "energy_consumption", "{}.db".format(db_name)))
+    db_conn.row_factory = sqlite3.Row
+    c = db_conn.cursor()
+    export_file = os.path.join("filtered_statistics", "energy_consumption", "{}.csv".format(db_name))
+
+    with open(export_file, 'w', newline='') as csv_file:
+        csv_writer = csv.writer(csv_file, delimiter=';', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+        csv_writer.writerow(["Nodes", "Energy Consumption (J)", "", ""])
+        csv_writer.writerow([""] + ["AVG", "CI_LL", "CI_UL"])
+
+        for num_nodes in range(10, 151, 10):  # excluding PAN coordinator
+            record = [num_nodes]
+
+            energy_consumption_samples = []
+            for row in c.execute('''SELECT * FROM energy_consumption_samples WHERE num_nodes=?''', (num_nodes,)):
+                energy_consumption_samples.append(row["energy_consumption"])
+
+            res = bs.bootstrap(numpy.asarray(energy_consumption_samples), stat_func=bs_stats.mean, num_iterations=1000)
             record += [res.value, res.lower_bound, res.upper_bound]
             csv_writer.writerow(record)

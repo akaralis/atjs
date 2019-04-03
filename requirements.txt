@@ -2,3 +2,4 @@ numpy
 bootstrapped
 pandas
 scipy
+netaddr

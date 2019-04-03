@@ -161,7 +161,10 @@ if __name__ == '__main__':
         (EBSchedulingMethod.ECFASH, Scenario.TWO_HOPS, False), (EBSchedulingMethod.ECFASH, Scenario.TWO_HOPS, True),
         (EBSchedulingMethod.ECV, Scenario.ONE_HOP), (EBSchedulingMethod.ECV, Scenario.TWO_HOPS),
         (EBSchedulingMethod.ECH, Scenario.ONE_HOP), (EBSchedulingMethod.ECH, Scenario.TWO_HOPS),
-        (EBSchedulingMethod.Minimal6TiSCH, Scenario.ANY)
+        (EBSchedulingMethod.Minimal6TiSCH, Scenario.ANY),
+        (EBSchedulingMethod.MAC_BASED_AS, Scenario.ANY),
+        (EBSchedulingMethod.EMAC_BASED_AS, Scenario.ONE_HOP),
+        (EBSchedulingMethod.EMAC_BASED_AS, Scenario.TWO_HOPS)
     ]
     # Note that only ECFAS, ECV, and ECH are favored by the presence of the PAN coordinator in the neighbors list of a
     # joining node

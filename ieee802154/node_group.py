@@ -1,3 +1,5 @@
+import random
+
 from pandas import Timedelta
 from ieee802154.node import Node, NodeType
 
@@ -58,6 +60,8 @@ class NodeGroup:
         self.__pan_coordinator = None
         self.__properties = properties
         self.__time = Timedelta(0)
+        self.__num_ffds = 0
+        self.__macs_in_use = []
 
     def __iter__(self):
         """
@@ -69,6 +73,9 @@ class NodeGroup:
     # The following two private functions are used by the friend class Node
     def __add_node(self, node):
         self.__nodes.append(node)
+        self.___assign_mac_addr(node)
+        if node.type is NodeType.FFD:
+            self.__num_ffds += 1
 
     def __set_pan_coordinator(self, pan_coordinator):
         self.__pan_coordinator = pan_coordinator
@@ -98,6 +105,14 @@ class NodeGroup:
         return len(self.__nodes)
 
     @property
+    def num_ffds(self):
+        """
+        :return: the number of Full Function Devices in the group
+        :rtype: int
+        """
+        return self.__num_ffds
+
+    @property
     def time(self):
         """
         Returns the (reference) time of the network group.
@@ -108,3 +123,16 @@ class NodeGroup:
         :rtype: Timedelta
         """
         return self.__time
+
+    def ___assign_mac_addr(self, node):
+        while True:
+            random_mac = [0x00, 0x8c, 0xfa, random.randint(0x00, 0xff), random.randint(0x00, 0xff),
+                          random.randint(0x00, 0xff)]
+
+            random_mac = '-'.join(map(lambda x: "%02x" % x, random_mac))
+            if random_mac not in self.__macs_in_use:
+                break
+
+        node._Node__mac_address = random_mac
+        self.__macs_in_use.append(random_mac)
+

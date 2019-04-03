@@ -5,6 +5,7 @@ from bisect import bisect_left
 from collections import deque
 from enum import Enum
 
+import netaddr
 from pandas import Timedelta
 
 from ieee802154.node import NodeType
@@ -14,8 +15,14 @@ from ieee802154.tsch.timeslot_template import TimeslotTemplate
 
 class EBSchedulingMethod(Enum):
     CFASV = "Collision-Free Advertisement Scheduling - Vertical Version"
+    MAC_BASED_AS = """A modified version of CFAS that calculates the advertisement cell of an advertiser based on 
+                its EUI64 address"""  # for test purposes only - not collision-free
+
     CFASH = "Collision-Free Advertisement Scheduling - Horizontal Version"
     ECFASV = "Enhanced Collision-Free Advertisement Scheduling - Vertical Version"
+    EMAC_BASED_AS = """A modified version of ECFAS that calculates the advertisement cell of an advertiser based on 
+                its EUI64 address"""  # for test purposes only - not collision-free
+
     ECFASH = "Enhanced Collision-Free Advertisement Scheduling - Horizontal Version"
     ECV = "Enhanced Coordinated Vertical filling"
     ECH = "Enhanced Coordinated Horizontal filling"
@@ -88,10 +95,11 @@ class JoiningPhaseSimulator:
         else:  # (E)CFAS
             # Our implementation of (E)CFAS determines automatically the number of advertisement slots required to
             # support collision-free EB transmissions
-            if scheduling_method in {EBSchedulingMethod.CFASV, EBSchedulingMethod.CFASH}:
+            if scheduling_method in {EBSchedulingMethod.CFASV, EBSchedulingMethod.CFASH,
+                                     EBSchedulingMethod.MAC_BASED_AS}:
                 num_required_adv_slots = int(
                     math.ceil(
-                        self.__node_group.size / (self.__num_channels * self.__ebi * self.__subslots_per_adv_slot))
+                        self.__node_group.num_ffds / (self.__num_channels * self.__ebi * self.__subslots_per_adv_slot))
                 )  # in the slotframe
 
                 if num_required_adv_slots > self.__slotframe_length:
@@ -102,21 +110,23 @@ class JoiningPhaseSimulator:
                         num_required_adv_slots * self.__subslots_per_adv_slot * self.__ebi * self.__num_channels
                 )
 
-                temp = set()
-                for node in self.__node_group:
-                    adv_cell_idx = node.id % total_adv_cells
-                    if adv_cell_idx in temp:
-                        raise NotValidJoiningPhaseSimulatorConfig(
-                            '''The specified node IDs do not allow for a one-to-one mapping between the nodes and the 
-                            available advertisement cells. Therefore, the EB schedule cannot be collision-free''')
-                    else:
-                        temp.add(adv_cell_idx)
+                if scheduling_method is not EBSchedulingMethod.MAC_BASED_AS:
+                    temp = set()
+                    for node in self.__node_group:
+                        if node.type is NodeType.FFD:
+                            adv_cell_idx = node.id % total_adv_cells
+                            if adv_cell_idx in temp:
+                                raise NotValidJoiningPhaseSimulatorConfig(
+                                    '''The specified node IDs do not allow for a one-to-one mapping between the nodes and the 
+                                    available advertisement cells. Therefore, the EB schedule cannot be collision-free''')
+                            else:
+                                temp.add(adv_cell_idx)
 
-            else:  # ECFAS
+            else:  # ECFAS - EMAC based AS
                 num_required_adv_slots = int(
-                    math.ceil((self.__node_group.size - 1) / ((self.__num_channels - 1) *
-                                                              self.__ebi *
-                                                              self.__subslots_per_adv_slot))
+                    math.ceil((self.__node_group.num_ffds - 1) / ((self.__num_channels - 1) *
+                                                                  self.__ebi *
+                                                                  self.__subslots_per_adv_slot))
                 )  # in the slotframe
 
                 if num_required_adv_slots > self.__slotframe_length:
@@ -127,18 +137,19 @@ class JoiningPhaseSimulator:
                 adv_cells_not_for_pan_c = (
                         num_required_adv_slots * self.__subslots_per_adv_slot * self.__ebi * (self.__num_channels - 1)
                 )
-                temp = set()
 
-                for node in self.__node_group:
-                    if node is not self.__node_group.pan_coordinator:
-                        adv_cell_idx = node.id % adv_cells_not_for_pan_c
-                        if adv_cell_idx in temp:
-                            raise NotValidJoiningPhaseSimulatorConfig('''The specified node IDs do not allow for a 
-                            one-to-one mapping between the nodes and the available advertisement cells. Therefore, the 
-                            EB schedule cannot be collision-free''')
+                if scheduling_method is not EBSchedulingMethod.EMAC_BASED_AS:
+                    temp = set()
+                    for node in self.__node_group:
+                        if node is not self.__node_group.pan_coordinator and node.type is NodeType.FFD:
+                            adv_cell_idx = node.id % adv_cells_not_for_pan_c
+                            if adv_cell_idx in temp:
+                                raise NotValidJoiningPhaseSimulatorConfig('''The specified node IDs do not allow for a 
+                                one-to-one mapping between the nodes and the available advertisement cells. Therefore, the 
+                                EB schedule cannot be collision-free''')
 
-                        else:
-                            temp.add(adv_cell_idx)
+                            else:
+                                temp.add(adv_cell_idx)
 
             self.__adv_slots_pos_in_ms = [j for i in range(0, self.__num_slots_in_ms, slotframe_length)
                                           for j in range(i, i + num_required_adv_slots)]
@@ -179,8 +190,9 @@ class JoiningPhaseSimulator:
         """
         Simulates the network formation process.
         The simulation is repeated at each call of the function
-        :return: the time at which the network formation completed
-        :rtype: pandas.Timedelta
+        :return: a tuple containing the time at which all the nodes have synchronized to the network,
+        and the sum energy consumption
+        :rtype: (pandas.Timedelta, float)
         """
         # The variable self.__allocated_ch_offset is a structure of nested dictionaries that allows the finding of the
         # channel offset assigned to a FFD node for a specific advertisement (sub)slot
@@ -194,6 +206,15 @@ class JoiningPhaseSimulator:
         self.__advertisers = {self.__node_group.pan_coordinator}  # joined nodes transmitting EBs
         self.__unjoined_nodes = {node for node in self.__node_group if node is not self.__node_group.pan_coordinator}
 
+        self.__sync_asn = dict()  # node->sync_asn - the asn at the time of synchronization
+        self.__sync_asn[self.__node_group.pan_coordinator] = 0
+
+        # a counter for the number of EBs that an advertiser has sent
+        self.__EB_tx_counter = dict()
+        self.__EB_tx_counter[self.__node_group.pan_coordinator] = 0
+
+        self.__formation_asn = None  # the asn when all the nodes have been synchronized to the network
+
         # Declare when an unjoined node starts to scan for EBs
         self.__scan_start_time = {node: node.boot_time for node in self.__node_group
                                   if node is not self.__node_group.pan_coordinator}
@@ -206,10 +227,15 @@ class JoiningPhaseSimulator:
                 for ch_offset in range(1, self.__num_channels)
             }
 
+            # the number of slots that an advertiser senses in order to find a (seemingly) free advertisement cell
+            self.__num_slots_sensed = {node: 0 for node in self.__node_group if node.type is NodeType.FFD}
+
         self.__multislotframe_idx = 0
         self.__has_the_execute_func_been_called = True
 
-        return self.__run_simulation()
+        total_time = self.__run_simulation()
+        energy_consumption = self.__total_energy_consumption()
+        return total_time, energy_consumption
 
     def rejoining_attempt(self, node, start_time_offset):
         """
@@ -334,6 +360,12 @@ class JoiningPhaseSimulator:
                     adv_subslot_idx = i * self.__subslots_per_adv_slot + j
                     ssn = self.__ssn[adv_subslot_idx] if self.__subslots_per_adv_slot > 1 else None
 
+                    # update the EB_tx_counter of advertisers
+                    for advertiser in self.__advertisers:
+                        # Check if the advertiser transmits in the current advertisement (sub)slot
+                        if adv_subslot_idx in self.__allocated_ch_offset[advertiser]:
+                            self.__EB_tx_counter[advertiser] += 1
+
                     # execute sensing
                     if self.__scheduling_method in {EBSchedulingMethod.ECV, EBSchedulingMethod.ECH}:
                         sensing_nodes_new = dict()
@@ -343,6 +375,8 @@ class JoiningPhaseSimulator:
                             nodes_sense_ch_busy = set()
 
                             for node in nodes_sense_ch:
+                                self.__num_slots_sensed[node] += 1
+
                                 if self.__is_a_neighbor_transmitting(node, adv_subslot_idx, ch_offset):
                                     nodes_sense_ch_busy.add(node)
 
@@ -434,15 +468,22 @@ class JoiningPhaseSimulator:
                             continue
 
                         new_joined_nodes.add(node)
+                        if self.__sync_asn.get(node) is None:
+                            self.__sync_asn[node] = asn
 
                         if node.type is NodeType.FFD:
                             new_advertisers.add(node)
+                            self.__EB_tx_counter[node] = 0
                             if self.__scheduling_method is EBSchedulingMethod.CFASV:
                                 self.__cfasv_allocate_adv_cell(node)
+                            elif self.__scheduling_method is EBSchedulingMethod.MAC_BASED_AS:
+                                self.__mbas_allocate_adv_cell(node)
                             elif self.__scheduling_method is EBSchedulingMethod.CFASH:
                                 self.__cfash_allocate_adv_cell(node)
                             elif self.__scheduling_method is EBSchedulingMethod.ECFASV:
                                 self.__cfasv_allocate_adv_cell(node, True)
+                            elif self.__scheduling_method is EBSchedulingMethod.EMAC_BASED_AS:
+                                self.__mbas_allocate_adv_cell(node, True)
                             elif self.__scheduling_method is EBSchedulingMethod.ECFASH:
                                 self.__cfash_allocate_adv_cell(node, True)
                             elif self.__scheduling_method is EBSchedulingMethod.Minimal6TiSCH:
@@ -477,6 +518,9 @@ class JoiningPhaseSimulator:
                                                                   asn * self.__timeslot_template.mac_ts_timeslot_length
                                                                   + (j + 1) * self.__subslot_length)
 
+                            if self.__formation_asn is None:
+                                self.__formation_asn = asn
+
                             # return the network formation time
                             return network_formation_time
 
@@ -484,6 +528,51 @@ class JoiningPhaseSimulator:
 
             starting_i = 0
             self.__multislotframe_idx += 1
+
+    def __total_energy_consumption(self):
+        """
+        Returns the sum energy consumption of nodes until all the nodes have been synchronized to the network.
+        If no simulation was performed previously, it returns None.
+        :return: the average energy consumption if a simulation has run, otherwise None
+        :rtype: float
+        """
+
+        if not self.__has_the_execute_func_been_called:
+            return None
+
+        # We use the energy consumption information of Zolertia RE-Mote
+        # https://github.com/Zolertia/Resources/blob/master/RE-Mote/Hardware/Revision%20B/Datasheets/ZOL-RM0x-B%20-%20RE-Mote%20revision%20B%20Datasheet%20v.1.0.0.pdf
+        rx_A = 0.02
+        tx_A = 0.024
+        idle_A = 1.3 / 10 ** 6
+        volts = 3.7
+
+        sum_ec = 0
+        for node in self.__node_group:
+
+            if self.__scheduling_method in {EBSchedulingMethod.ECV, EBSchedulingMethod.ECH, EBSchedulingMethod.ECFASV,
+                                            EBSchedulingMethod.ECFASH,
+                                            EBSchedulingMethod.EMAC_BASED_AS} and node is self.__node_group.pan_coordinator:
+                continue  # in this case we assume that the node has no energy limitations
+
+            sync_time = self.__sync_asn[node] * self.__timeslot_template.mac_ts_timeslot_length.total_seconds()
+            ec_for_sync = sync_time * rx_A * volts  # joules
+
+            EB_tx_counter = self.__EB_tx_counter.get(node, 0)  # return 0 if the node is not an advertiser
+            ec_for_EBs = EB_tx_counter * self.__t_eb.total_seconds() * tx_A * volts  # joules
+
+            idle_slots = self.__formation_asn - self.__sync_asn[node] - EB_tx_counter
+            ec_idle = idle_slots * self.__timeslot_template.mac_ts_timeslot_length.total_seconds() * idle_A * volts
+
+            sum_ec += ec_for_sync + ec_for_EBs + ec_idle
+
+            if self.__scheduling_method in {EBSchedulingMethod.ECV, EBSchedulingMethod.ECH}:
+                num_slots_sensed = self.__num_slots_sensed.get(node, 0)
+                sensing_time_per_slot = self.__timeslot_template.mac_ts_rx_wait.total_seconds()
+                ec_sensing = num_slots_sensed * sensing_time_per_slot * rx_A * volts
+                sum_ec += ec_sensing
+
+        return sum_ec
 
     def __cfasv_allocate_adv_cell(self, node, enhanced_version=False):
         """
@@ -494,6 +583,34 @@ class JoiningPhaseSimulator:
         num_avail_ch_offsets = self.__num_channels if not enhanced_version else self.__num_channels - 1
 
         adv_cell_idx = node.id % (self.__total_adv_subslots_in_ms * num_avail_ch_offsets)
+        adv_subslot_idx = adv_cell_idx // num_avail_ch_offsets
+        ch_offset = adv_cell_idx % num_avail_ch_offsets
+        if enhanced_version:
+            ch_offset += 1
+
+        self.__allocated_ch_offset[node][adv_subslot_idx] = ch_offset
+
+    def __mbas_allocate_adv_cell(self, node, enhanced_version=False):
+        num_avail_ch_offsets = self.__num_channels if not enhanced_version else self.__num_channels - 1
+
+        def sax(mac_addr):  # https://bitbucket.org/6tisch/simulator/src/master/SimEngine/Mote/sf.py
+            LEFT_SHIFT_NUM = 5
+            RIGHT_SHIFT_NUM = 2
+
+            # assuming v (seed) is 0
+            hash_value = 0
+            for word in netaddr.EUI(mac_addr).words:
+                for byte in divmod(word, 0x100):
+                    left_shifted = (hash_value << LEFT_SHIFT_NUM)
+                    right_shifted = (hash_value >> RIGHT_SHIFT_NUM)
+                    hash_value ^= left_shifted + right_shifted + byte
+
+            # assuming T (table size) is 16-bit
+            return hash_value & 0xFFFF
+
+        sax_int = sax(node.mac_address)
+
+        adv_cell_idx = sax_int % (num_avail_ch_offsets * self.__total_adv_subslots_in_ms)
         adv_subslot_idx = adv_cell_idx // num_avail_ch_offsets
         ch_offset = adv_cell_idx % num_avail_ch_offsets
         if enhanced_version:
@@ -524,10 +641,13 @@ class JoiningPhaseSimulator:
         elif self.__scheduling_method is EBSchedulingMethod.CFASV:
             self.__cfasv_allocate_adv_cell(self.__node_group.pan_coordinator)
 
+        elif self.__scheduling_method is EBSchedulingMethod.MAC_BASED_AS:
+            self.__mbas_allocate_adv_cell(self.__node_group.pan_coordinator)
+
         elif self.__scheduling_method is EBSchedulingMethod.CFASH:
             self.__cfash_allocate_adv_cell(self.__node_group.pan_coordinator)
 
-        else:  # EBSchedulingMethod.ECFASV EBSchedulingMethod.ECFASH, EBSchedulingMethod.ECV, EBSchedulingMethod.ECH
+        else:  # (E)CFAS, ECV, ECH, ΕMAC-based AS
             # In this case, it is assumed that the coordinator has no energy limitations and transmits EBs
             # in every advertisement (sub)slot using channel offset 0.
             for adv_subslot_idx in range(self.__total_adv_subslots_in_ms):
@@ -730,7 +850,7 @@ class JoiningPhaseSimulator:
                 "The parameter num_channels must be a non-negative integer")
 
         if self.__scheduling_method in {EBSchedulingMethod.ECV, EBSchedulingMethod.ECH, EBSchedulingMethod.ECFASV,
-                                        EBSchedulingMethod.ECFASH}:
+                                        EBSchedulingMethod.ECFASH, EBSchedulingMethod.EMAC_BASED_AS}:
             if (
                     any(node is not self.__node_group.pan_coordinator and node.type is NodeType.FFD
                         for node in self.__node_group) and self.__num_channels == 1

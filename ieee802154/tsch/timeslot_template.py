@@ -21,7 +21,7 @@ class TimeslotTemplate:
         - macTsRxTx: Transmit to Receive turnaround, in μs.
         - macTsMaxAck: Transmission time to send an acknowledgment, in μs.
         - macTsMaxTx: Transmission time to send the maximum length frame, in μs.
-        - macTsTimeslotLength: The total length of the timeslot including any unused time after frame transmission and
+        - macTsTimeslotLength: The sum length of the timeslot including any unused time after frame transmission and
         acknowledgment, in μs.
         - macTsAckWait: The minimum time to wait for the start of an acknowledgment in μs.
         The attributes should be specified as integers in the range of 0–65535.
@@ -167,7 +167,7 @@ class TimeslotTemplate:
     @property
     def mac_ts_timeslot_length(self):
         """
-        The total length of the timeslot including any unused time after frame transmission and acknowledgment.
+        The sum length of the timeslot including any unused time after frame transmission and acknowledgment.
         :return: the value of the attribute macTsTimeslotLength
         :rtype: pandas.Timedelta
         """

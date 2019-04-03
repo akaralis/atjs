@@ -3,7 +3,7 @@
 * Install Python 3.7
 * Clone or download this repository
 * Install the Python dependencies:
-   `cd atjs` and `pip install -r requirements.txt`
+   `cd atjs` and `pip3 install -r requirements.txt`
    
 ## Code Organization
 
@@ -27,13 +27,14 @@ To reproduce the statistical results used by the paper, run the following comman
 
 1. `python3 sim_for_fixed_joining_node.py`
 1. `python3 sim_for_mobile_joining_node.py`
+1. `python3 sim_for_energy_consumption.py`
 1. `python3 results_export.py`
 
 The execution of these commands leads to the creation of the following two folders (in the current working directory): 
 
 - statistics: the samples that were produced by the simulations. The samples are saved in Sqlite databases.
-- filtered_statistics: the final statistics (avg joining time and 95% confidence intervals), which are saved as CSV
-  files. 
+- filtered_statistics: the final statistics (avg joining times or energy consumption and 95% confidence intervals), 
+  which are saved as CSV files. 
 
 We note that, both the samples and the filtered statistics are provided separately for the examined cases of 
 a fixed and a mobile joining node, in the related subfolders. In the case of a fixed joining node, the simulation

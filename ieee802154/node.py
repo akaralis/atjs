@@ -19,7 +19,7 @@ class Node:
     """
     This class represents nodes and is a friend class of the class ieee802154.node_group.NodeGroup.
     When a node is mobile, the node moves according to the Random Waypoint Model, with a speed range of 0.1 - 5 m/s and
-    zero pause times at the waypoints.
+    zero pause times at the waypoints. Each node automatically receives a unique mac address within the node group.
     """
 
     def __init__(self, id, position, is_mobile, type, tx_power, radio_sensitivity, boot_time, channel_switching_time,
@@ -224,6 +224,15 @@ class Node:
         :rtype: ieee802154.node_group.NodeGroup
         """
         return self.__node_group
+
+    @property
+    def mac_address(self):
+        """
+        Return the mac address of the node
+        :return: the mac address of the node
+        :rtype: str
+        """
+        return self.__mac_address
 
     def distance_from_node(self, node):
         """

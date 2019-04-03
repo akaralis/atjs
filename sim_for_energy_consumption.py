@@ -16,16 +16,13 @@ from ieee802154.tsch import timeslot_template
 
 def main(scheduling_method, atp_enabled=False):
     db_name = "{}{}".format(scheduling_method.name, ("_with_ATP" if atp_enabled else ""))
-
-    db_conn = sqlite3.connect(os.path.join("statistics", "mobile_joining_node", "{}.db".format(db_name)))
+    db_conn = sqlite3.connect(os.path.join("statistics", "energy_consumption", "{}.db".format(db_name)))
     c = db_conn.cursor()
-
-    c.execute('''CREATE TABLE mobile_node_joining_time_samples (advertisers INTEGER, time REAL)''')
+    c.execute('''CREATE TABLE energy_consumption_samples (num_nodes INTEGER, energy_consumption REAL)''')
 
     db_conn.commit()
 
     node_groups_samples_per_test = 1000
-    rejoin_attemps = 100
     multislotframe_length = 5  # in slotframes. It is identical to the Enhanced Beacon Interval (EBI)
     slotframe_length = 101
     scanning_duration = (
@@ -41,11 +38,13 @@ def main(scheduling_method, atp_enabled=False):
     sensitivity = -100  # dBm
     # According to the path loss model that is used (see the function __rx_power in the class JoiningPhaseSimulator),
     # with tx_power = 0 and sensitivity = -100 the guaranteed range is 17m and the max possible distance of a receiver
-    # is 60m.
+    # is 60m.ls
 
-    for num_advertisers in range(10, 151, 10):
-        # Note that we assume that all the advertisers are fixed nodes
+    for num_nodes in range(10, 151, 10):
         node_group_samples = 0
+
+        num_mobile_nodes = int(0.1 * num_nodes)
+        num_advertisers = num_nodes - num_mobile_nodes
 
         while node_group_samples < node_groups_samples_per_test:
 
@@ -71,10 +70,10 @@ def main(scheduling_method, atp_enabled=False):
                                    ng.properties.area_dimensions[1] * randomIns.random()), tx_power, sensitivity,
                            Timedelta(0), channel_switching_time, ng)
 
-            # create fixed-nodes/advertisers (except the PAN coordinator)
-            for i in range(1, num_advertisers):
+            # create the fixed nodes/advertisers (except the PAN coordinator)
+            for _ in range(num_advertisers):
                 while True:
-                    # find a random position that is in the guaranteed range of an already created (fixed) node
+                    # find a random position that is in the guaranteed range of an already created node
 
                     position = (ng.properties.area_dimensions[0] * randomIns.random(),
                                 ng.properties.area_dimensions[1] * randomIns.random())
@@ -86,29 +85,27 @@ def main(scheduling_method, atp_enabled=False):
                 Node(available_ids.pop(), position, False, NodeType.FFD, tx_power, sensitivity,
                      Timedelta(randomIns.random() * 100, unit="s"), channel_switching_time, ng)
 
-            # create a mobile node
-            initial_pos = (ng.properties.area_dimensions[0] * randomIns.random(),
-                           ng.properties.area_dimensions[1] * randomIns.random())
+            # create the mobile nodes
+            for i in range(num_mobile_nodes):
+                initial_pos = (ng.properties.area_dimensions[0] * randomIns.random(),
+                               ng.properties.area_dimensions[1] * randomIns.random())
 
-            # The mobile node is not an advertiser. We select an id that does not collide with the advertisers' ids
-            mobile_node_id = num_available_ids + 1
-            mobile_node = Node(mobile_node_id, initial_pos, True, NodeType.RFD, tx_power, sensitivity,
-                               Timedelta(randomIns.random() * 100, unit="s"), channel_switching_time, ng)
+                # The mobile node is not an advertiser. We select an id that does not collide with the advertisers' ids
+                mobile_node_id = num_available_ids + i + 1
+                Node(mobile_node_id, initial_pos, True, NodeType.RFD, tx_power, sensitivity,
+                     Timedelta(randomIns.random() * 100, unit="s"), channel_switching_time, ng)
 
             simulator = JoiningPhaseSimulator(
                 ng, scheduling_method, timeslot_template.defaultTimeslotTemplateFor2450MHzBand,
                 slotframe_length, eb_length, num_channels, scanning_duration, multislotframe_length, atp_enabled)
 
-            simulator.execute()
+            energy_consumption = simulator.execute()[1]
+            c.execute('''INSERT INTO energy_consumption_samples (num_nodes, energy_consumption) VALUES(?, ?)''',
+                      (num_nodes, energy_consumption))
 
-            # collect samples from the mobile node
-            for _ in range(rejoin_attemps):
-                res = simulator.rejoining_attempt(mobile_node, Timedelta(randomIns.random() * 100, unit="s"))
-                c.execute('''INSERT INTO mobile_node_joining_time_samples(advertisers, time) VALUES(?, ?)''',
-                          (num_advertisers, res.total_seconds()))
-
-            db_conn.commit()
             node_group_samples += 1
+
+        db_conn.commit()
 
     db_conn.close()
 
@@ -116,17 +113,16 @@ def main(scheduling_method, atp_enabled=False):
 if __name__ == '__main__':
     PROCESSES_TO_USE = multiprocessing.cpu_count()
     # create a folder for statistics
-    os.makedirs(os.path.join("statistics", "mobile_joining_node"), exist_ok=True)
+    os.makedirs(os.path.join("statistics", "energy_consumption"), exist_ok=True)
 
     simulations = [
-        # (EBSchedulingMethod.ECV,), (EBSchedulingMethod.ECH,),
-        # (EBSchedulingMethod.Minimal6TiSCH,), (EBSchedulingMethod.ECFASV, False), (EBSchedulingMethod.ECFASV, True),
-        # (EBSchedulingMethod.CFASV, False), (EBSchedulingMethod.CFASV, True),
+        (EBSchedulingMethod.ECV,), (EBSchedulingMethod.ECH,),
+        (EBSchedulingMethod.Minimal6TiSCH,), (EBSchedulingMethod.ECFASV, False), (EBSchedulingMethod.ECFASV, True),
+        (EBSchedulingMethod.CFASV, False), (EBSchedulingMethod.CFASV, True),
         (EBSchedulingMethod.CFASH, False), (EBSchedulingMethod.CFASH, True),
-        # (EBSchedulingMethod.ECFASH, False), (EBSchedulingMethod.ECFASH, True),
-        # (EBSchedulingMethod.MAC_BASED_AS,),
-        # (EBSchedulingMethod.EMAC_BASED_AS,)
-
+        (EBSchedulingMethod.ECFASH, False), (EBSchedulingMethod.ECFASH, True),
+        (EBSchedulingMethod.MAC_BASED_AS,),
+        (EBSchedulingMethod.EMAC_BASED_AS,)
     ]
 
     with Pool(processes=PROCESSES_TO_USE) as pool:
